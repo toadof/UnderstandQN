@@ -1,0 +1,27 @@
+services:
+  # FastAPI backend (Web Service with Docker)
+  - type: web
+    name: underhoodqnb
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
+
+  # React frontend (Static Site)
+  - type: web
+    name: underhoodqn
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://underhoodqnb.onrender.com/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
