@@ -39,6 +39,7 @@ def health():
 
 
 @app.post("/trace", response_model=TraceResponse)
+@app.post("/api/trace", response_model=TraceResponse)
 async def trace_endpoint(request: TraceRequest):
     """
     Execute user-submitted Python code with provided inputs.
@@ -47,7 +48,7 @@ async def trace_endpoint(request: TraceRequest):
     if not request.code.strip():
         raise HTTPException(status_code=400, detail="Code cannot be empty")
 
-    if not request.inputs:
+    if request.inputs is None:
         raise HTTPException(status_code=400, detail="Inputs cannot be empty")
 
     try:

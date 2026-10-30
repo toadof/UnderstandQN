@@ -36,7 +36,7 @@ export default function StepNarrative({ step, prevStep, steps, currentIndex }) {
         <div className="px-4 py-3">
           <div className="text-[10px] uppercase tracking-widest text-green-600 font-semibold mb-1">Return Value</div>
           <div className="font-mono text-lg font-black text-green-300 bg-green-500/5 rounded-lg px-3 py-2 border border-green-500/20">
-            {JSON.stringify(vars.__result)}
+            {JSON.stringify(vars.__result__ !== undefined ? vars.__result__ : vars.__result)}
           </div>
         </div>
       </motion.div>
@@ -64,7 +64,7 @@ export default function StepNarrative({ step, prevStep, steps, currentIndex }) {
         </div>
         <div className="px-4 py-3">
           <div className="font-mono text-sm text-red-300 bg-red-500/5 rounded-lg px-3 py-2 border border-red-500/20">
-            {vars.__error}
+            {vars.__error__ || vars.__error}
           </div>
         </div>
       </motion.div>

@@ -1,7 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import axios from 'axios'
 
-const API_URL = '/api/trace'
+const API_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL.replace(/\/+$/, '')}/trace`
+  : '/api/trace'
 
 const DEFAULT_CODE = `def two_sum(nums, target):
     seen = {}

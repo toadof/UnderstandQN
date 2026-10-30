@@ -1,9 +1,12 @@
 import sys
 import re
+import ast
 import json
 import copy
 import types
 from typing import Any
+
+MAX_STEPS = 1000  # Guard against infinite loops or runaway execution
 
 
 def trace_code(code: str, inputs: dict[str, Any]) -> dict:
@@ -20,10 +23,7 @@ def trace_code(code: str, inputs: dict[str, Any]) -> dict:
     code_lines = code.split("\n")
     code_line_count = len(code_lines)
 
-    # Detect standalone function or class method
-    is_class = bool(re.search(r'class\s+\w+', code))
-    call_statement = _build_call_statement(code, inputs, is_class)
-
+    call_statement = _build_call_statement(code, inputs)
     full_code = code + call_statement
 
     prev_snapshot: dict[str, Any] = {}
@@ -64,6 +64,12 @@ def trace_code(code: str, inputs: dict[str, Any]) -> dict:
 
     def trace_lines(frame, event, arg):
         if event == "line":
+            if len(steps) >= MAX_STEPS:
+                raise RuntimeError(
+                    f"Execution step limit exceeded ({MAX_STEPS} steps). "
+                    "Check for infinite loops or reduce input size."
+                )
+
             # Current state reflects the previously pending line of this frame
             record_pending_step(frame, list(call_stack))
 
@@ -88,6 +94,8 @@ def trace_code(code: str, inputs: dict[str, Any]) -> dict:
         # raises NameError).
         namespace: dict[str, Any] = {
             "__builtins__": __builtins__,
+            "__copy__": copy,
+            "__inputs__": copy.deepcopy(inputs),
             **inputs,
         }
 
@@ -125,50 +133,66 @@ def trace_code(code: str, inputs: dict[str, Any]) -> dict:
     return {"total": len(steps), "steps": steps, "codeLines": code_lines}
 
 
-def _build_call_statement(code: str, inputs: dict, is_class: bool) -> str:
-    """Build the auto-call statement appended to user code. Deep copies mutable inputs."""
-    if is_class:
-        class_match = re.search(r'class\s+(\w+)', code)
-        method_match = re.search(r'def\s+(\w+)\s*\(\s*self\s*,\s*([^)]*)\)', code)
-        if not class_match or not method_match:
-            return "\n__result__ = None"
+def _build_call_statement(code: str, inputs: dict) -> str:
+    """
+    Build the auto-call statement appended to user code.
+    Uses Python AST parsing to accurately extract classes, methods, and functions
+    without regex brittleness regarding type annotations, comments, or helper functions.
+    """
+    input_keys = set(inputs.keys())
 
-        class_name = class_match.group(1)
-        method_name = method_match.group(1)
-        params = [p.strip().split(":")[0].strip() for p in method_match.group(2).split(",") if p.strip()]
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        # If code has syntax errors, fall back; compile() in trace_code will report it cleanly
+        return "\n__result__ = None"
 
-        args = []
-        for p in params:
-            if p in inputs:
-                val = inputs[p]
-                if isinstance(val, (list, dict)):
-                    args.append(f"__import__('json').loads(__import__('json').dumps({json.dumps(val)}))")
-                else:
-                    args.append(json.dumps(val))
-            else:
-                args.append("None")
+    # 1. Look for class definitions (e.g. LeetCode Solution class)
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+    if classes:
+        cls = classes[0]
+        methods = [
+            m for m in cls.body
+            if isinstance(m, ast.FunctionDef) and not m.name.startswith("__")
+        ]
+        if not methods:
+            methods = [m for m in cls.body if isinstance(m, ast.FunctionDef)]
 
-        return f"\n__inst = {class_name}()\n__result__ = __inst.{method_name}({', '.join(args)})"
-    else:
-        func_match = re.search(r'def\s+(\w+)\s*\(([^)]*)\)', code)
-        if not func_match:
-            return "\n__result__ = None"
+        if methods:
+            # Score method by parameter match with inputs
+            def method_score(m: ast.FunctionDef) -> tuple[int, int]:
+                p_names = {a.arg for a in m.args.args if a.arg != "self"}
+                return (len(p_names & input_keys), len(p_names))
 
-        func_name = func_match.group(1)
-        params = [p.strip().split(":")[0].strip() for p in func_match.group(2).split(",") if p.strip()]
+            best_method = max(methods, key=method_score)
+            params = [a.arg for a in best_method.args.args if a.arg != "self"]
+            args = [
+                f"__copy__.deepcopy(__inputs__[{repr(p)}])" if p in inputs else "None"
+                for p in params
+            ]
+            return f"\n__inst = {cls.name}()\n__result__ = __inst.{best_method.name}({', '.join(args)})"
+        return "\n__result__ = None"
 
-        args = []
-        for p in params:
-            if p in inputs:
-                val = inputs[p]
-                if isinstance(val, (list, dict)):
-                    args.append(f"__import__('json').loads(__import__('json').dumps({json.dumps(val)}))")
-                else:
-                    args.append(json.dumps(val))
-            else:
-                args.append("None")
+    # 2. Look for top-level function definitions
+    funcs = [
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and not n.name.startswith("__")
+    ]
+    if funcs:
+        def func_score(f: ast.FunctionDef) -> tuple[int, int]:
+            p_names = {a.arg for a in f.args.args}
+            return (len(p_names & input_keys), len(p_names))
 
-        return f"\n__result__ = {func_name}({', '.join(args)})"
+        best_func = max(funcs, key=func_score)
+        params = [a.arg for a in best_func.args.args]
+        args = [
+            f"__copy__.deepcopy(__inputs__[{repr(p)}])" if p in inputs else "None"
+            for p in params
+        ]
+        return f"\n__result__ = {best_func.name}({', '.join(args)})"
+
+    # 3. Top-level script without functions
+    return "\n__result__ = None"
 
 
 def _diff_vars(prev: dict, curr: dict) -> tuple:
@@ -202,7 +226,7 @@ def _capture_locals(frame) -> dict[str, Any]:
     """
     snapshot: dict[str, Any] = {}
     for name, value in frame.f_locals.items():
-        if name.startswith("__") and name.endswith("__"):
+        if name.startswith("__"):
             continue
         try:
             json.dumps(value)
